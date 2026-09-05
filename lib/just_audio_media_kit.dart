@@ -48,6 +48,9 @@ class JustAudioMediaKit extends JustAudioPlatform {
   /// [the related issue](https://github.com/Pato05/just_audio_media_kit/issues/11) for more information
   static bool prefetchPlaylist = false;
 
+  /// Native decoder names to exclude before opening media on each new player.
+  static Set<String> excludedAudioDecoders = const {};
+
   /// Path to PEM client certificate file for mTLS.
   static String? tlsCertFile;
 
@@ -100,7 +103,13 @@ class JustAudioMediaKit extends JustAudioPlatform {
     _logger.fine('instantiating new player ${request.id}');
     final player = MediaKitPlayer(request.id);
     _players[request.id] = player;
-    await player.ready();
+    try {
+      await player.ready();
+    } catch (_) {
+      _players.remove(request.id);
+      await player.release();
+      rethrow;
+    }
     _logger.fine('player ready! (players: $_players)');
     return player;
   }

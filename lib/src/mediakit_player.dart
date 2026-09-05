@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 import 'package:logging/logging.dart';
@@ -19,7 +20,15 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   final _readyCompleter = Completer<void>();
 
   /// Completes when the player is ready
-  Future<void> ready() => _readyCompleter.future;
+  Future<void> ready() => _configurationFuture ??= _configure();
+
+  Future<void>? _configurationFuture;
+
+  Future<void> _configure() async {
+    await _readyCompleter.future;
+    await excludeAudioDecoders(
+        _player, JustAudioMediaKit.excludedAudioDecoders);
+  }
 
   static final _logger = Logger('MediaKitPlayer');
 
@@ -35,6 +44,11 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   int? _errorCode;
   String? _errorMessage;
   Completer<Duration?>? _loadCompleter;
+  bool _released = false;
+  bool _failed = false;
+  Future<void>? _pendingSeek;
+  Future<void>? _pendingOpen;
+  Future<void>? _releaseFuture;
 
   /// The index that's currently playing
   int _currentIndex = 0;
@@ -43,9 +57,10 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   Duration? _setPosition;
 
   Media? get _currentMedia {
-    var medias = _player.state.playlist.medias;
-    if (medias.isEmpty) return null;
-    return medias[_player.state.playlist.index];
+    final playlist = _player.state.playlist;
+    final index = playlist.index;
+    if (index < 0 || index >= playlist.medias.length) return null;
+    return playlist.medias[index];
   }
 
   MediaKitPlayer(super.id) {
@@ -71,11 +86,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
     _streamSubscriptions = [
       _player.stream.duration.listen((duration) {
+        if (_released || _failed) return;
         if (_currentMedia?.extras?['overrideDuration'] != null) return;
 
         if (_setPosition != null && duration.inSeconds > 0) {
-          unawaited(_player.seek(_setPosition!));
+          final position = _setPosition!;
           _setPosition = null;
+          _pendingSeek = _seekInitialPosition(position);
         }
         _updateDuration(duration);
         _updatePlaybackEvent();
@@ -88,6 +105,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         _updatePlaybackEvent();
       }),
       _player.stream.buffering.listen((isBuffering) {
+        if (_released || _failed) return;
         final start = _currentMedia?.start;
         if (!isBuffering && start != null && _bufferedPosition <= start) {
           // Not ready yet, will be triggered by _player.stream.buffer
@@ -114,6 +132,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         _updatePlaybackEvent();
       }),
       _player.stream.buffer.listen((buffer) {
+        if (_released || _failed) return;
         _bufferedPosition = buffer;
         // Detect ready for clipping audio source
         final start = _currentMedia?.start;
@@ -132,6 +151,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         _dataController.add(PlayerDataMessage(volume: volume / 100.0));
       }),
       _player.stream.completed.listen((completed) {
+        if (_released || _failed) return;
         _bufferedPosition = _position = Duration.zero;
         if (completed &&
             // is at the end of the [Playlist]
@@ -147,15 +167,18 @@ class MediaKitPlayer extends AudioPlayerPlatform {
       }),
       _player.stream.error.listen((error) {
         final errorUri = RegExp(r'Failed to open (.*)\.').firstMatch(error)?[1];
-        if (errorUri == null || errorUri == _currentMedia?.uri) {
-          _processingState = ProcessingStateMessage.idle;
-          _errorCode = kErrorCode;
-          _errorMessage = error;
-          _updatePlaybackEvent();
+        if (errorUri == null ||
+            errorUri == _currentMedia?.uri ||
+            _processingState == ProcessingStateMessage.loading) {
+          _reportError(error);
         }
         _logger.severe('ERROR OCCURRED: $error');
       }),
       _player.stream.playlist.listen((playlist) {
+        // mpv can emit an end sentinel after failing the last playlist entry.
+        if (playlist.index < 0 || playlist.index >= playlist.medias.length) {
+          return;
+        }
         if (_currentIndex != playlist.index) {
           _bufferedPosition = _position = Duration.zero;
           _currentIndex = playlist.index;
@@ -178,6 +201,30 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         print("MPV: [${event.level}] ${event.prefix}: ${event.text}");
       }),
     ];
+  }
+
+  Future<void> _seekInitialPosition(Duration position) async {
+    try {
+      await _player.seek(position);
+    } catch (error) {
+      _reportError(error.toString());
+    }
+  }
+
+  void _reportError(String message) {
+    if (_released || _failed) return;
+    _failed = true;
+    _mediaOpened = false;
+    _setPosition = null;
+    _processingState = ProcessingStateMessage.idle;
+    _errorCode = kErrorCode;
+    _errorMessage = message;
+    final load = _loadCompleter;
+    if (load != null && !load.isCompleted) {
+      load.completeError(
+          PlatformException(code: '$kErrorCode', message: message));
+    }
+    _updatePlaybackEvent();
   }
 
   void _updateDuration(Duration duration) {
@@ -214,6 +261,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   /// Updates the playback event
   void _updatePlaybackEvent() {
+    if (_released) return;
     _eventController.add(PlaybackEventMessage(
       processingState: _processingState,
       updateTime: DateTime.now(),
@@ -230,9 +278,16 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<LoadResponse> load(LoadRequest request) async {
+    if (_released) {
+      throw PlatformException(code: 'abort', message: 'Player released');
+    }
     _logger.finest('load(${request.toMap()})');
     _mediaOpened = false;
-    _loadCompleter = Completer();
+    final load = _loadCompleter = Completer<Duration?>();
+    // Errors may arrive during open(), before we await this future below.
+    load.future.ignore();
+    _failed = false;
+    _setPosition = null;
     _currentIndex = request.initialIndex ?? 0;
     _bufferedPosition = Duration.zero;
     _position = Duration.zero;
@@ -249,21 +304,36 @@ class MediaKitPlayer extends AudioPlayerPlatform {
           audioSource.children.map(_convertAudioSourceIntoMediaKit).toList(),
           index: _currentIndex);
 
-      await _player.open(playable, play: _playing);
+      await (_pendingOpen = _player.open(playable, play: _playing));
     } else {
       final playable =
           _convertAudioSourceIntoMediaKit(request.audioSourceMessage);
       _logger.finest('playable is ${playable.toString()}');
-      await _player.open(playable, play: _playing);
+      await (_pendingOpen = _player.open(playable, play: _playing));
     }
+    if (_released || _failed) return LoadResponse(duration: await load.future);
     _mediaOpened = true;
 
-    if (request.initialPosition != null) {
+    if (request.initialPosition != null &&
+        request.initialPosition! > Duration.zero) {
       _setPosition = _position = request.initialPosition!;
+      if (_player.state.duration > Duration.zero) {
+        _setPosition = null;
+        await (_pendingSeek = _seekInitialPosition(request.initialPosition!));
+      }
     }
 
+    if (!_failed &&
+        !_released &&
+        !_player.state.buffering &&
+        _player.state.duration > Duration.zero &&
+        !load.isCompleted) {
+      _updateDuration(_player.state.duration);
+      _processingState = ProcessingStateMessage.ready;
+      load.complete(_duration);
+    }
     _updatePlaybackEvent();
-    final duration = await _loadCompleter?.future;
+    final duration = await load.future;
     return LoadResponse(duration: duration);
   }
 
@@ -392,15 +462,33 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   }
 
   /// Release the resources used by this player.
-  Future<void> release() async {
+  Future<void> release() => _releaseFuture ??= _release();
+
+  Future<void> _release() async {
     _logger.info('releasing player resources');
+    _released = true;
     _mediaOpened = false;
-    await _player.dispose();
-    // cancel all stream subscriptions
+    _setPosition = null;
+    final load = _loadCompleter;
+    if (load != null && !load.isCompleted) {
+      load.completeError(
+          PlatformException(code: 'abort', message: 'Player released'));
+    }
+    // Stop callbacks before disposing native resources. A duration callback
+    // can otherwise enqueue a seek on an already disposed native player.
     for (final StreamSubscription subscription in _streamSubscriptions) {
-      unawaited(subscription.cancel());
+      await subscription.cancel();
     }
     _streamSubscriptions.clear();
+    try {
+      await _pendingOpen;
+    } catch (_) {
+      // The load caller owns open errors; disposal must still finish.
+    }
+    await _pendingSeek;
+    await _player.dispose();
+    unawaited(_eventController.close());
+    unawaited(_dataController.close());
   }
 
   /// Converts an [AudioSourceMessage] into a [Media] for playback
