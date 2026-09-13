@@ -1,0 +1,175 @@
+name: P1 desktop backend playback acknowledgment apply
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-backend-playback-ack-apply.yml
+
+permissions: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact target branch
+        uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+          fetch-depth: 2
+
+      - name: Verify exact target head
+        shell: bash
+        run: |
+          expected='4ce47afe8feb08a0c1f8c5af068304e309a3d1f1'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected target head: $actual" >&2
+            exit 1
+          fi
+
+      - name: Apply asserted desktop source patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def patch(path_name, edits):
+              path = Path(path_name)
+              text = path.read_text()
+              for label, old, new in edits:
+                  count = text.count(old)
+                  if count != 1:
+                      raise SystemExit(f'{path_name} / {label}: expected one match, found {count}')
+                  text = text.replace(old, new, 1)
+              path.write_text(text)
+
+          patch('lib/src/set_property_io.dart', [
+              ('native playback helper',
+               """Future<void> setProperty(Player player, String key, dynamic value) async {\n  if (player.platform is! NativePlayer) return;\n  await (player.platform as NativePlayer).setProperty(key, value);\n}\n""",
+               """Future<void> setProperty(Player player, String key, dynamic value) async {\n  if (player.platform is! NativePlayer) return;\n  await (player.platform as NativePlayer).setProperty(key, value);\n}\n\nFuture<bool?> isNativeEffectivelyPlaying(Player player) async {\n  if (player.platform is! NativePlayer) return null;\n  final native = player.platform as NativePlayer;\n  final values = await Future.wait([\n    native.getProperty('pause'),\n    native.getProperty('core-idle'),\n    native.getProperty('seeking'),\n    native.getProperty('paused-for-cache'),\n    native.getProperty('eof-reached'),\n  ]);\n\n  bool flag(String name, String value) {\n    switch (value.trim().toLowerCase()) {\n      case 'yes':\n      case 'true':\n      case '1':\n        return true;\n      case 'no':\n      case 'false':\n      case '0':\n        return false;\n      default:\n        throw StateError('Unexpected libmpv flag $name=$value');\n    }\n  }\n\n  final paused = flag('pause', values[0]);\n  final coreIdle = flag('core-idle', values[1]);\n  final seeking = flag('seeking', values[2]);\n  final pausedForCache = flag('paused-for-cache', values[3]);\n  final eofReached = flag('eof-reached', values[4]);\n  return !paused && !coreIdle && !seeking && !pausedForCache && !eofReached;\n}\n""')
+          ])
+
+          patch('lib/src/set_property_noop.dart', [
+              ('noop playback helper',
+               """Future<void> setProperty(Player player, String key, dynamic value) {\n  // noop\n  return Future.value();\n}\n""",
+               """Future<void> setProperty(Player player, String key, dynamic value) {\n  // noop\n  return Future.value();\n}\n\nFuture<bool?> isNativeEffectivelyPlaying(Player player) async => null;\n""')
+          ])
+
+          patch('lib/src/mediakit_player.dart', [
+              ('ack fields',
+               """  bool _released = false;\n  bool _failed = false;\n  Future<void>? _pendingSeek;\n""",
+               """  bool _released = false;\n  bool _failed = false;\n  int _playbackSourceEpoch = 0;\n  int _playbackControlEpoch = 0;\n  Completer<AwaitPlaybackStartResponse>? _playbackStartCompleter;\n  int? _playbackStartSourceEpoch;\n  int? _playbackStartControlEpoch;\n  int? _playbackStartIndex;\n  String? _playbackStartAttemptId;\n  bool _lastEffectivePlaying = false;\n  bool _playbackEvaluationRunning = false;\n  bool _playbackEvaluationPending = false;\n  Future<void>? _pendingSeek;\n""'),
+              ('ack helpers',
+               """  Media? get _currentMedia {\n    final playlist = _player.state.playlist;\n    final index = playlist.index;\n    if (index < 0 || index >= playlist.medias.length) return null;\n    return playlist.medias[index];\n  }\n\n  MediaKitPlayer(super.id) {\n""",
+               """  Media? get _currentMedia {\n    final playlist = _player.state.playlist;\n    final index = playlist.index;\n    if (index < 0 || index >= playlist.medias.length) return null;\n    return playlist.medias[index];\n  }\n\n  void _completePlaybackStart(\n    PlaybackStartStatusMessage status, {\n    String? errorMessage,\n  }) {\n    final completer = _playbackStartCompleter;\n    if (completer == null) return;\n    _playbackStartCompleter = null;\n    _playbackStartSourceEpoch = null;\n    _playbackStartControlEpoch = null;\n    _playbackStartIndex = null;\n    _playbackStartAttemptId = null;\n    if (!completer.isCompleted) {\n      completer.complete(AwaitPlaybackStartResponse(\n        status: status,\n        errorMessage: errorMessage,\n      ));\n    }\n  }\n\n  void _advancePlaybackSourceEpoch() {\n    _playbackSourceEpoch++;\n    _playbackControlEpoch++;\n    _completePlaybackStart(PlaybackStartStatusMessage.superseded);\n  }\n\n  void _advancePlaybackControlEpoch() {\n    _playbackControlEpoch++;\n    _completePlaybackStart(PlaybackStartStatusMessage.superseded);\n  }\n\n  void _emitEffectivePlaying(bool effectivePlaying) {\n    if (_lastEffectivePlaying == effectivePlaying) return;\n    _lastEffectivePlaying = effectivePlaying;\n    _dataController.add(PlayerDataMessage(effectivePlaying: effectivePlaying));\n  }\n\n  void _schedulePlaybackEvaluation() {\n    if (_released) return;\n    _playbackEvaluationPending = true;\n    if (_playbackEvaluationRunning) return;\n    _playbackEvaluationRunning = true;\n    unawaited(_drainPlaybackEvaluations());\n  }\n\n  Future<void> _drainPlaybackEvaluations() async {\n    try {\n      while (_playbackEvaluationPending && !_released) {\n        _playbackEvaluationPending = false;\n        await _evaluatePlaybackState();\n      }\n    } finally {\n      _playbackEvaluationRunning = false;\n      if (_playbackEvaluationPending && !_released) {\n        _schedulePlaybackEvaluation();\n      }\n    }\n  }\n\n  Future<void> _evaluatePlaybackState() async {\n    final sourceEpoch = _playbackSourceEpoch;\n    final controlEpoch = _playbackControlEpoch;\n    final index = _currentIndex;\n    final attemptId = _playbackStartAttemptId;\n\n    bool? nativeEffectivePlaying;\n    try {\n      nativeEffectivePlaying = await isNativeEffectivelyPlaying(_player);\n    } catch (error) {\n      if (_released ||\n          sourceEpoch != _playbackSourceEpoch ||\n          controlEpoch != _playbackControlEpoch ||\n          index != _currentIndex) {\n        return;\n      }\n      _emitEffectivePlaying(false);\n      if (attemptId != null && attemptId == _playbackStartAttemptId) {\n        _completePlaybackStart(\n          PlaybackStartStatusMessage.failed,\n          errorMessage: error.toString(),\n        );\n      }\n      return;\n    }\n\n    if (_released ||\n        sourceEpoch != _playbackSourceEpoch ||\n        controlEpoch != _playbackControlEpoch ||\n        index != _currentIndex) {\n      return;\n    }\n\n    final effectivePlaying = nativeEffectivePlaying == true &&\n        _playing &&\n        _mediaOpened &&\n        !_failed &&\n        _processingState == ProcessingStateMessage.ready;\n    _emitEffectivePlaying(effectivePlaying);\n\n    if (attemptId == null || attemptId != _playbackStartAttemptId) return;\n    if (_playbackStartSourceEpoch != _playbackSourceEpoch ||\n        _playbackStartControlEpoch != _playbackControlEpoch ||\n        _playbackStartIndex != _currentIndex) {\n      _completePlaybackStart(PlaybackStartStatusMessage.superseded);\n      return;\n    }\n    if (nativeEffectivePlaying == null) {\n      _completePlaybackStart(PlaybackStartStatusMessage.unsupported);\n      return;\n    }\n    if (_failed) {\n      _completePlaybackStart(PlaybackStartStatusMessage.failed);\n      return;\n    }\n    if (!_playing ||\n        _processingState == ProcessingStateMessage.idle ||\n        _processingState == ProcessingStateMessage.completed) {\n      _completePlaybackStart(PlaybackStartStatusMessage.rejected);\n      return;\n    }\n    if (effectivePlaying) {\n      _completePlaybackStart(PlaybackStartStatusMessage.started);\n    }\n  }\n\n  MediaKitPlayer(super.id) {\n""'),
+              ('position trigger',
+               """        if (_position < Duration.zero) _position = Duration.zero;\n        _updatePlaybackEvent();\n      }),\n""",
+               """        if (_position < Duration.zero) _position = Duration.zero;\n        _updatePlaybackEvent();\n        _schedulePlaybackEvaluation();\n      }),\n""'),
+              ('buffering trigger',
+               """        _errorCode = null;\n        _errorMessage = null;\n        _updatePlaybackEvent();\n      }),\n      _player.stream.buffer.listen((buffer) {\n""",
+               """        _errorCode = null;\n        _errorMessage = null;\n        _updatePlaybackEvent();\n        _schedulePlaybackEvaluation();\n      }),\n      _player.stream.buffer.listen((buffer) {\n""'),
+              ('completed trigger',
+               """        _errorCode = null;\n        _errorMessage = null;\n\n        _updatePlaybackEvent();\n      }),\n      _player.stream.error.listen((error) {\n""",
+               """        _errorCode = null;\n        _errorMessage = null;\n\n        _updatePlaybackEvent();\n        _schedulePlaybackEvaluation();\n      }),\n      _player.stream.error.listen((error) {\n""'),
+              ('playlist trigger',
+               """        _duration = _currentMedia?.extras?['overrideDuration'];\n        _updatePlaybackEvent();\n      }),\n      _player.stream.playlistMode.listen((playlistMode) {\n""",
+               """        _duration = _currentMedia?.extras?['overrideDuration'];\n        _updatePlaybackEvent();\n        _schedulePlaybackEvaluation();\n      }),\n      _player.stream.playlistMode.listen((playlistMode) {\n""'),
+              ('report error',
+               """  void _reportError(String message) {\n    if (_released || _failed) return;\n    _failed = true;\n""",
+               """  void _reportError(String message) {\n    if (_released || _failed) return;\n    _failed = true;\n    _emitEffectivePlaying(false);\n    _completePlaybackStart(\n      PlaybackStartStatusMessage.failed,\n      errorMessage: message,\n    );\n""'),
+              ('load epoch',
+               """  Future<LoadResponse> load(LoadRequest request) async {\n    if (_released) {\n""",
+               """  Future<LoadResponse> load(LoadRequest request) async {\n    if (_released) {\n"""),
+              ('load after release guard',
+               """      throw PlatformException(code: 'abort', message: 'Player released');\n    }\n    _logger.finest('load(${request.toMap()})');\n""",
+               """      throw PlatformException(code: 'abort', message: 'Player released');\n    }\n    _advancePlaybackSourceEpoch();\n    _logger.finest('load(${request.toMap()})');\n""'),
+              ('load final trigger',
+               """    _updatePlaybackEvent();\n    final duration = await load.future;\n    return LoadResponse(duration: duration);\n  }\n\n  @override\n  Future<PlayResponse> play(PlayRequest request) async {\n""",
+               """    _updatePlaybackEvent();\n    _schedulePlaybackEvaluation();\n    final duration = await load.future;\n    return LoadResponse(duration: duration);\n  }\n\n  @override\n  Future<PlayResponse> play(PlayRequest request) async {\n""'),
+              ('play control',
+               """  Future<PlayResponse> play(PlayRequest request) async {\n    _playing = true;\n    if (_mediaOpened) {\n      await _player.play();\n    }\n    return PlayResponse();\n  }\n\n  @override\n  Future<PauseResponse> pause(PauseRequest request) async {\n""",
+               """  Future<PlayResponse> play(PlayRequest request) async {\n    _advancePlaybackControlEpoch();\n    _playing = true;\n    if (_mediaOpened) {\n      await _player.play();\n    }\n    _schedulePlaybackEvaluation();\n    return PlayResponse();\n  }\n\n  @override\n  Future<AwaitPlaybackStartResponse> awaitPlaybackStart(\n      AwaitPlaybackStartRequest request) {\n    _completePlaybackStart(PlaybackStartStatusMessage.superseded);\n    if (_released) {\n      return Future.value(AwaitPlaybackStartResponse(\n        status: PlaybackStartStatusMessage.failed,\n        errorMessage: 'Player released',\n      ));\n    }\n    if (!_playing ||\n        _processingState == ProcessingStateMessage.idle ||\n        _processingState == ProcessingStateMessage.completed) {\n      return Future.value(AwaitPlaybackStartResponse(\n        status: PlaybackStartStatusMessage.rejected,\n      ));\n    }\n    final completer = Completer<AwaitPlaybackStartResponse>();\n    _playbackStartCompleter = completer;\n    _playbackStartSourceEpoch = _playbackSourceEpoch;\n    _playbackStartControlEpoch = _playbackControlEpoch;\n    _playbackStartIndex = _currentIndex;\n    _playbackStartAttemptId = request.attemptId;\n    _schedulePlaybackEvaluation();\n    return completer.future;\n  }\n\n  @override\n  Future<PauseResponse> pause(PauseRequest request) async {\n""'),
+              ('pause control',
+               """  Future<PauseResponse> pause(PauseRequest request) async {\n    _playing = false;\n    if (_mediaOpened) {\n      await _player.pause();\n    }\n    return PauseResponse();\n  }\n""",
+               """  Future<PauseResponse> pause(PauseRequest request) async {\n    _advancePlaybackControlEpoch();\n    _playing = false;\n    if (_mediaOpened) {\n      await _player.pause();\n    }\n    _schedulePlaybackEvaluation();\n    return PauseResponse();\n  }\n""'),
+              ('seek control',
+               """  Future<SeekResponse> seek(SeekRequest request) async {\n    _logger.finest('seek(${request.toMap()})');\n""",
+               """  Future<SeekResponse> seek(SeekRequest request) async {\n    _advancePlaybackControlEpoch();\n    _logger.finest('seek(${request.toMap()})');\n""'),
+              ('release control',
+               """  Future<void> _release() async {\n    _logger.info('releasing player resources');\n    _released = true;\n""",
+               """  Future<void> _release() async {\n    _logger.info('releasing player resources');\n    _advancePlaybackControlEpoch();\n    _emitEffectivePlaying(false);\n    _released = true;\n""'),
+          ])
+          PY
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve against modified platform interface
+        shell: bash
+        run: |
+          cat > dependency_overrides.yaml <<'EOF'
+          dependency_overrides:
+            just_audio_platform_interface:
+              git:
+                url: https://github.com/Kyomorie/just_audio.git
+                ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f
+                path: just_audio_platform_interface
+          EOF
+          flutter pub get --no-example
+
+      - name: Format and analyze
+        shell: bash
+        run: |
+          dart format lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          flutter analyze lib
+
+      - name: Restore generated files and validate exact scope
+        shell: bash
+        run: |
+          rm -f dependency_overrides.yaml pubspec.lock
+          rm -rf .dart_tool
+          git checkout -- analysis_options.yaml 2>/dev/null || true
+          git diff --check
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart | sort)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo 'Unexpected changed paths:' >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+      - name: Commit validated desktop source
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          git commit -m 'feat: confirm effective playback on media_kit'
+
+      - name: Push only if target branch is unchanged
+        shell: bash
+        run: |
+          expected='4ce47afe8feb08a0c1f8c5af068304e309a3d1f1'
+          remote_head="$(git ls-remote origin refs/heads/feat/backend-playback-ack | cut -f1)"
+          if [[ "$remote_head" != "$expected" ]]; then
+            echo "Target branch moved externally: $remote_head" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD^)" != "$expected" ]]; then
+            echo 'Validated source commit has unexpected parent.' >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Working tree is dirty after validation.' >&2
+            git status --short >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/feat/backend-playback-ack
