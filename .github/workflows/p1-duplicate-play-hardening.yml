@@ -1,0 +1,144 @@
+name: P1 duplicate play acknowledgment hardening
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-duplicate-play-hardening.yml
+
+permissions: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact target branch
+        uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+          fetch-depth: 2
+
+      - name: Verify exact target head
+        shell: bash
+        run: |
+          expected='8946dabf857571b4fb7f25c50876d920a81518ea'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected target head: $actual" >&2
+            exit 1
+          fi
+
+      - name: Apply asserted duplicate-play fix
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/src/mediakit_player.dart')
+          text = path.read_text()
+          old = """  @override\n  Future<PlayResponse> play(PlayRequest request) async {\n    _advancePlaybackControlEpoch();\n    _playing = true;\n    if (_mediaOpened) {\n      await _player.play();\n    }\n    _schedulePlaybackEvaluation();\n    return PlayResponse();\n  }\n"""
+          new = """  @override\n  Future<PlayResponse> play(PlayRequest request) async {\n    if (_playing) {\n      // just_audio may legitimately issue a duplicate native play request while\n      // load/play activation races settle. A duplicate play keeps the same\n      // user intent and must not supersede an in-flight playback-start ack.\n      _schedulePlaybackEvaluation();\n      return PlayResponse();\n    }\n    _advancePlaybackControlEpoch();\n    _playing = true;\n    if (_mediaOpened) {\n      await _player.play();\n    }\n    _schedulePlaybackEvaluation();\n    return PlayResponse();\n  }\n"""
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected MediaKit play() implementation')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Regression contract gate
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          text = Path('lib/src/mediakit_player.dart').read_text()
+          start = text.index('  Future<PlayResponse> play(PlayRequest request) async {')
+          end = text.index('\n  @override\n  Future<AwaitPlaybackStartResponse>', start)
+          body = text[start:end]
+          guard = body.index('if (_playing) {')
+          duplicate_return = body.index('return PlayResponse();', guard)
+          advance = body.index('_advancePlaybackControlEpoch();')
+          assignment = body.index('_playing = true;')
+          if not (guard < duplicate_return < advance < assignment):
+              raise SystemExit('Duplicate play guard is not before control-epoch advancement')
+          if body.count('_advancePlaybackControlEpoch();') != 1:
+              raise SystemExit('Unexpected control-epoch advancement count in play()')
+          if body.count('_player.play()') != 1:
+              raise SystemExit('Unexpected native play dispatch count in play()')
+          print('duplicate-play contract: PASS')
+          PY
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve against patched platform interface
+        shell: bash
+        run: |
+          cp pubspec.yaml /tmp/pubspec.yaml
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('pubspec.yaml')
+          text = path.read_text()
+          old = '  just_audio_platform_interface: ^4.5.0\n'
+          new = '''  just_audio_platform_interface:\n    git:\n      url: https://github.com/Kyomorie/just_audio.git\n      ref: c6efa2e1415155a6aad515c7f255602b785883c2\n      path: just_audio_platform_interface\n'''
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected platform-interface dependency')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          flutter pub get --no-example
+          git checkout -- analysis_options.yaml 2>/dev/null || true
+
+      - name: Format and analyze
+        shell: bash
+        run: |
+          dart format lib/src/mediakit_player.dart
+          flutter analyze lib
+
+      - name: Restore dependency side effects and scope gate
+        shell: bash
+        run: |
+          cp /tmp/pubspec.yaml pubspec.yaml
+          rm -f pubspec.lock
+          rm -rf .dart_tool
+          git checkout -- analysis_options.yaml 2>/dev/null || true
+          git diff --check
+          actual="$(git diff --name-only | sort)"
+          expected='lib/src/mediakit_player.dart'
+          if [[ "$actual" != "$expected" ]]; then
+            echo 'Unexpected changed paths:' >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+      - name: Commit validated duplicate-play fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/src/mediakit_player.dart
+          git commit -m 'fix: preserve playback ack across duplicate play'
+
+      - name: Push only if target branch is unchanged
+        shell: bash
+        run: |
+          expected='8946dabf857571b4fb7f25c50876d920a81518ea'
+          remote_head="$(git ls-remote origin refs/heads/feat/backend-playback-ack | cut -f1)"
+          if [[ "$remote_head" != "$expected" ]]; then
+            echo "Target branch moved externally: $remote_head" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD^)" != "$expected" ]]; then
+            echo 'Validated commit has unexpected parent.' >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Working tree is dirty after validation.' >&2
+            git status --short >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/feat/backend-playback-ack
