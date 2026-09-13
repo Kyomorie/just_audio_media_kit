@@ -1,0 +1,145 @@
+name: P1 desktop backend playback acknowledgment compile
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-desktop-smoke-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+      - name: Verify exact adapter head
+        shell: bash
+        run: |
+          expected='8946dabf857571b4fb7f25c50876d920a81518ea'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected adapter head: $actual" >&2
+            exit 1
+          fi
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Create Linux smoke app
+        shell: bash
+        run: |
+          flutter create --platforms=linux --org dev.kyomorie /tmp/p1_desktop_smoke
+          cat > /tmp/p1_desktop_smoke/pubspec.yaml <<'EOF'
+          name: p1_desktop_smoke
+          publish_to: none
+          environment:
+            sdk: '>=3.6.0 <4.0.0'
+          dependencies:
+            flutter:
+              sdk: flutter
+            just_audio:
+              git:
+                url: https://github.com/Kyomorie/just_audio.git
+                ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f
+                path: just_audio
+            just_audio_media_kit:
+              git:
+                url: https://github.com/Kyomorie/just_audio_media_kit.git
+                ref: 8946dabf857571b4fb7f25c50876d920a81518ea
+            media_kit_libs_linux: any
+          dependency_overrides:
+            just_audio_platform_interface:
+              git:
+                url: https://github.com/Kyomorie/just_audio.git
+                ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f
+                path: just_audio_platform_interface
+          EOF
+          cat > /tmp/p1_desktop_smoke/lib/main.dart <<'EOF'
+          import 'package:flutter/widgets.dart';
+          import 'package:just_audio/just_audio.dart';
+          import 'package:just_audio_media_kit/just_audio_media_kit.dart';
+
+          void main() {
+            JustAudioMediaKit.ensureInitialized();
+            final player = AudioPlayer();
+            player.dispose();
+            runApp(const SizedBox.shrink());
+          }
+          EOF
+      - name: Compile Linux integration
+        working-directory: /tmp/p1_desktop_smoke
+        shell: bash
+        run: |
+          flutter pub get
+          flutter build linux --debug
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+      - name: Verify exact adapter head
+        shell: pwsh
+        run: |
+          $expected='8946dabf857571b4fb7f25c50876d920a81518ea'
+          $actual=(git rev-parse HEAD).Trim()
+          if ($actual -ne $expected) { throw "Unexpected adapter head: $actual" }
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Create Windows smoke app
+        shell: pwsh
+        run: |
+          flutter create --platforms=windows --org dev.kyomorie "$env:RUNNER_TEMP\p1_desktop_smoke"
+          @'
+          name: p1_desktop_smoke
+          publish_to: none
+          environment:
+            sdk: '>=3.6.0 <4.0.0'
+          dependencies:
+            flutter:
+              sdk: flutter
+            just_audio:
+              git:
+                url: https://github.com/Kyomorie/just_audio.git
+                ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f
+                path: just_audio
+            just_audio_media_kit:
+              git:
+                url: https://github.com/Kyomorie/just_audio_media_kit.git
+                ref: 8946dabf857571b4fb7f25c50876d920a81518ea
+            media_kit_libs_windows_audio: any
+          dependency_overrides:
+            just_audio_platform_interface:
+              git:
+                url: https://github.com/Kyomorie/just_audio.git
+                ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f
+                path: just_audio_platform_interface
+          '@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\p1_desktop_smoke\pubspec.yaml"
+          @'
+          import 'package:flutter/widgets.dart';
+          import 'package:just_audio/just_audio.dart';
+          import 'package:just_audio_media_kit/just_audio_media_kit.dart';
+
+          void main() {
+            JustAudioMediaKit.ensureInitialized();
+            final player = AudioPlayer();
+            player.dispose();
+            runApp(const SizedBox.shrink());
+          }
+          '@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\p1_desktop_smoke\lib\main.dart"
+      - name: Compile Windows integration
+        shell: pwsh
+        working-directory: ${{ runner.temp }}\p1_desktop_smoke
+        run: |
+          flutter pub get
+          flutter build windows --debug
