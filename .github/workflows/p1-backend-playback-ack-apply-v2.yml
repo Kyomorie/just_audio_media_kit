@@ -1,0 +1,134 @@
+name: P1 desktop backend playback acknowledgment apply v2
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-backend-playback-ack-apply-v2.yml
+
+permissions: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout automation source
+        uses: actions/checkout@v6
+        with:
+          ref: automation/p1-media-kit-apply
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout exact target branch
+        uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+          path: target
+          fetch-depth: 2
+
+      - name: Verify exact target head
+        working-directory: target
+        shell: bash
+        run: |
+          expected='4ce47afe8feb08a0c1f8c5af068304e309a3d1f1'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected target head: $actual" >&2
+            exit 1
+          fi
+
+      - name: Extract, syntax-fix and apply frozen source patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('automation/.github/workflows/p1-backend-playback-ack-apply.yml').read_text()
+          marker = "          python3 <<'PY'\n"
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index("\n          PY\n", start)
+          script = textwrap.dedent(workflow[start:end])
+          script = script.replace('""\')', '""")')
+          compile(script, '/tmp/p1_media_kit_apply.py', 'exec')
+          Path('/tmp/p1_media_kit_apply.py').write_text(script)
+          PY
+          cd target
+          python3 /tmp/p1_media_kit_apply.py
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve against modified platform interface
+        working-directory: target
+        shell: bash
+        run: |
+          cat > dependency_overrides.yaml <<'EOF'
+          dependency_overrides:
+            just_audio_platform_interface:
+              git:
+                url: https://github.com/Kyomorie/just_audio.git
+                ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f
+                path: just_audio_platform_interface
+          EOF
+          flutter pub get --no-example
+
+      - name: Format and analyze
+        working-directory: target
+        shell: bash
+        run: |
+          dart format lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          flutter analyze lib
+
+      - name: Restore generated files and validate exact scope
+        working-directory: target
+        shell: bash
+        run: |
+          rm -f dependency_overrides.yaml pubspec.lock
+          rm -rf .dart_tool
+          git checkout -- analysis_options.yaml 2>/dev/null || true
+          git diff --check
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart | sort)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo 'Unexpected changed paths:' >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+      - name: Commit validated desktop source
+        working-directory: target
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          git commit -m 'feat: confirm effective playback on media_kit'
+
+      - name: Push only if target branch is unchanged
+        working-directory: target
+        shell: bash
+        run: |
+          expected='4ce47afe8feb08a0c1f8c5af068304e309a3d1f1'
+          remote_head="$(git ls-remote origin refs/heads/feat/backend-playback-ack | cut -f1)"
+          if [[ "$remote_head" != "$expected" ]]; then
+            echo "Target branch moved externally: $remote_head" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD^)" != "$expected" ]]; then
+            echo 'Validated source commit has unexpected parent.' >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Working tree is dirty after validation.' >&2
+            git status --short >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/feat/backend-playback-ack
