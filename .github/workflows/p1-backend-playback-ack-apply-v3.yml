@@ -1,0 +1,165 @@
+name: P1 desktop backend playback acknowledgment apply v3
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-backend-playback-ack-apply-v3.yml
+
+permissions: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout automation source
+        uses: actions/checkout@v6
+        with:
+          ref: automation/p1-media-kit-apply
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout exact target branch
+        uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+          path: target
+          fetch-depth: 2
+
+      - name: Verify exact target head
+        working-directory: target
+        shell: bash
+        run: |
+          expected='4ce47afe8feb08a0c1f8c5af068304e309a3d1f1'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected target head: $actual" >&2
+            exit 1
+          fi
+
+      - name: Extract, syntax-fix and apply frozen source patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('automation/.github/workflows/p1-backend-playback-ack-apply.yml').read_text()
+          marker = "          python3 <<'PY'\n"
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index("\n          PY\n", start)
+          script = textwrap.dedent(workflow[start:end])
+          script = script.replace('""\')', '""")')
+          compile(script, '/tmp/p1_media_kit_apply.py', 'exec')
+          Path('/tmp/p1_media_kit_apply.py').write_text(script)
+          PY
+          cd target
+          python3 /tmp/p1_media_kit_apply.py
+
+      - name: Pin validation dependency to exact fork interface
+        working-directory: target
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('pubspec.yaml')
+          text = path.read_text()
+          old = '  just_audio_platform_interface: ^4.5.0\n'
+          new = '''  just_audio_platform_interface:\n    git:\n      url: https://github.com/Kyomorie/just_audio.git\n      ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f\n      path: just_audio_platform_interface\n'''
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected just_audio_platform_interface dependency declaration')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve exact validation dependency
+        working-directory: target
+        shell: bash
+        run: flutter pub get --no-example
+
+      - name: Prove resolved interface source and API
+        working-directory: target
+        shell: bash
+        run: |
+          grep -n 'Kyomorie/just_audio' pubspec.lock
+          grep -n '16de0252e42b3badc817fbc2e18d03d6feea2b7f' pubspec.lock
+          config="$(find .dart_tool -name package_config.json -print -quit)"
+          if [[ -z "$config" ]]; then
+            echo 'package_config.json not found' >&2
+            exit 1
+          fi
+          python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('.dart_tool/package_config.json').read_text())
+          package = next((p for p in data['packages'] if p['name'] == 'just_audio_platform_interface'), None)
+          if package is None:
+              raise SystemExit('just_audio_platform_interface missing from package config')
+          root = package['rootUri']
+          print(f'just_audio_platform_interface rootUri={root}')
+          if 'git' not in root and 'just_audio' not in root:
+              raise SystemExit(f'Unexpected interface rootUri: {root}')
+          PY
+
+      - name: Format and analyze desktop source
+        working-directory: target
+        shell: bash
+        run: |
+          dart format lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          flutter analyze lib
+
+      - name: Restore validation-only files and validate exact scope
+        working-directory: target
+        shell: bash
+        run: |
+          git checkout -- pubspec.yaml pubspec.lock analysis_options.yaml
+          rm -rf .dart_tool
+          git diff --check
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart | sort)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo 'Unexpected changed paths:' >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+      - name: Commit validated desktop source
+        working-directory: target
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          git commit -m 'feat: confirm effective playback on media_kit'
+
+      - name: Push only if target branch is unchanged
+        working-directory: target
+        shell: bash
+        run: |
+          expected='4ce47afe8feb08a0c1f8c5af068304e309a3d1f1'
+          remote_head="$(git ls-remote origin refs/heads/feat/backend-playback-ack | cut -f1)"
+          if [[ "$remote_head" != "$expected" ]]; then
+            echo "Target branch moved externally: $remote_head" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD^)" != "$expected" ]]; then
+            echo 'Validated source commit has unexpected parent.' >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Working tree is dirty after validation.' >&2
+            git status --short >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/feat/backend-playback-ack
