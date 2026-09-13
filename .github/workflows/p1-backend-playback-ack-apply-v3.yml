@@ -123,7 +123,8 @@ jobs:
         working-directory: target
         shell: bash
         run: |
-          git checkout -- pubspec.yaml pubspec.lock analysis_options.yaml
+          git checkout -- pubspec.yaml analysis_options.yaml
+          rm -f pubspec.lock
           rm -rf .dart_tool
           git diff --check
           actual="$(git diff --name-only | sort)"
