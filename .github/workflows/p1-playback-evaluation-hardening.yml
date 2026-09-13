@@ -1,0 +1,156 @@
+name: P1 desktop playback evaluation hardening
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-playback-evaluation-hardening.yml
+
+permissions: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact target branch
+        uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+          fetch-depth: 2
+
+      - name: Verify exact target head
+        shell: bash
+        run: |
+          expected='ea15857bd52cce2bbcf032fe361164c71c676f66'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected target head: $actual" >&2
+            exit 1
+          fi
+
+      - name: Apply asserted evaluation hardening
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/src/mediakit_player.dart')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              """  void _advancePlaybackSourceEpoch() {\n    _playbackSourceEpoch++;\n    _playbackControlEpoch++;\n    _completePlaybackStart(PlaybackStartStatusMessage.superseded);\n  }\n""",
+              """  void _advancePlaybackSourceEpoch() {\n    _playbackSourceEpoch++;\n    _playbackControlEpoch++;\n    _completePlaybackStart(PlaybackStartStatusMessage.superseded);\n    _emitEffectivePlaying(false);\n  }\n""",
+              'source epoch clears effective playback',
+          )
+
+          replace_once(
+              """        _updateDuration(duration);\n        _updatePlaybackEvent();\n      }),\n      _player.stream.position.listen((position) {\n""",
+              """        _updateDuration(duration);\n        _updatePlaybackEvent();\n        if (_playbackStartCompleter != null) {\n          _schedulePlaybackEvaluation();\n        }\n      }),\n      _player.stream.position.listen((position) {\n""",
+              'duration pending-start trigger',
+          )
+
+          replace_once(
+              """        if (_position < Duration.zero) _position = Duration.zero;\n        _updatePlaybackEvent();\n        _schedulePlaybackEvaluation();\n      }),\n      _player.stream.buffering.listen((isBuffering) {\n""",
+              """        if (_position < Duration.zero) _position = Duration.zero;\n        _updatePlaybackEvent();\n        if (_playbackStartCompleter != null) {\n          _schedulePlaybackEvaluation();\n        }\n      }),\n      _player.stream.buffering.listen((isBuffering) {\n""",
+              'position only polls while start pending',
+          )
+
+          replace_once(
+              """        }\n        _updatePlaybackEvent();\n      }),\n      _player.stream.volume.listen((volume) {\n""",
+              """        }\n        _updatePlaybackEvent();\n        if (_playbackStartCompleter != null) {\n          _schedulePlaybackEvaluation();\n        }\n      }),\n      _player.stream.playing.listen((_) {\n        if (_released || _failed) return;\n        _schedulePlaybackEvaluation();\n      }),\n      _player.stream.volume.listen((volume) {\n""",
+              'buffer and playing triggers',
+          )
+
+          replace_once(
+              """  Future<SeekResponse> seek(SeekRequest request) async {\n    _advancePlaybackControlEpoch();\n    _logger.finest('seek(${request.toMap()})');\n""",
+              """  Future<SeekResponse> seek(SeekRequest request) async {\n    _advancePlaybackControlEpoch();\n    _emitEffectivePlaying(false);\n    _logger.finest('seek(${request.toMap()})');\n""",
+              'seek clears effective playback',
+          )
+
+          replace_once(
+              """    // reset position on seek\n    _updatePlaybackEvent();\n    return SeekResponse();\n  }\n""",
+              """    // reset position on seek\n    _updatePlaybackEvent();\n    _schedulePlaybackEvaluation();\n    return SeekResponse();\n  }\n""",
+              'seek reevaluates after completion',
+          )
+
+          path.write_text(text)
+          PY
+
+      - name: Pin validation dependency
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('pubspec.yaml')
+          text = path.read_text()
+          old = '  just_audio_platform_interface: ^4.5.0\n'
+          new = '''  just_audio_platform_interface:\n    git:\n      url: https://github.com/Kyomorie/just_audio.git\n      ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f\n      path: just_audio_platform_interface\n'''
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected interface dependency declaration')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Analyze exact source
+        shell: bash
+        run: |
+          flutter pub get --no-example
+          dart format lib/src/mediakit_player.dart
+          flutter analyze lib
+
+      - name: Restore validation-only files and validate scope
+        shell: bash
+        run: |
+          git checkout -- pubspec.yaml analysis_options.yaml
+          rm -f pubspec.lock
+          rm -rf .dart_tool
+          git diff --check
+          actual="$(git diff --name-only)"
+          expected='lib/src/mediakit_player.dart'
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected changed paths: $actual" >&2
+            exit 1
+          fi
+
+      - name: Commit hardening
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/src/mediakit_player.dart
+          git commit -m 'perf: bound desktop playback state polling'
+
+      - name: Push only if target branch is unchanged
+        shell: bash
+        run: |
+          expected='ea15857bd52cce2bbcf032fe361164c71c676f66'
+          remote_head="$(git ls-remote origin refs/heads/feat/backend-playback-ack | cut -f1)"
+          if [[ "$remote_head" != "$expected" ]]; then
+            echo "Target branch moved externally: $remote_head" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD^)" != "$expected" ]]; then
+            echo 'Hardening commit has unexpected parent.' >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Working tree dirty after validation.' >&2
+            git status --short >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/feat/backend-playback-ack
