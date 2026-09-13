@@ -1,0 +1,113 @@
+name: P1 duplicate play native dispatch hardening
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-duplicate-play-native-dispatch-hardening.yml
+
+permissions: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+          fetch-depth: 2
+      - name: Verify exact target head
+        shell: bash
+        run: |
+          expected='be71c5f7fc5b9e58ca24f2cb4aca35588fc906c0'
+          actual="$(git rev-parse HEAD)"
+          [[ "$actual" == "$expected" ]] || { echo "Unexpected target head: $actual" >&2; exit 1; }
+      - name: Preserve native duplicate play without superseding ack
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('lib/src/mediakit_player.dart')
+          text = path.read_text()
+          old = """  @override\n  Future<PlayResponse> play(PlayRequest request) async {\n    if (_playing) {\n      // just_audio may legitimately issue a duplicate native play request while\n      // load/play activation races settle. A duplicate play keeps the same\n      // user intent and must not supersede an in-flight playback-start ack.\n      _schedulePlaybackEvaluation();\n      return PlayResponse();\n    }\n    _advancePlaybackControlEpoch();\n    _playing = true;\n    if (_mediaOpened) {\n      await _player.play();\n    }\n    _schedulePlaybackEvaluation();\n    return PlayResponse();\n  }\n"""
+          new = """  @override\n  Future<PlayResponse> play(PlayRequest request) async {\n    if (!_playing) {\n      _advancePlaybackControlEpoch();\n      _playing = true;\n    }\n    // just_audio may legitimately issue a duplicate native play request while\n    // load/play activation races settle. Preserve the adapter's prior\n    // idempotent native play dispatch, but keep the same control epoch so an\n    // in-flight playback-start ack is not spuriously superseded.\n    if (_mediaOpened) {\n      await _player.play();\n    }\n    _schedulePlaybackEvaluation();\n    return PlayResponse();\n  }\n"""
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected hardened play() implementation')
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Regression contract gate
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          text = Path('lib/src/mediakit_player.dart').read_text()
+          start = text.index('  Future<PlayResponse> play(PlayRequest request) async {')
+          end = text.index('\n  @override\n  Future<AwaitPlaybackStartResponse>', start)
+          body = text[start:end]
+          guard = body.index('if (!_playing) {')
+          advance = body.index('_advancePlaybackControlEpoch();')
+          set_playing = body.index('_playing = true;')
+          native = body.index('await _player.play();')
+          if not (guard < advance < set_playing < native):
+              raise SystemExit('Play-intent epoch guard or native dispatch ordering is wrong')
+          if 'return PlayResponse();' in body[:native]:
+              raise SystemExit('Duplicate play returns before preserving native dispatch')
+          if body.count('_advancePlaybackControlEpoch();') != 1:
+              raise SystemExit('Unexpected epoch advancement count')
+          print('duplicate-play native dispatch contract: PASS')
+          PY
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Resolve against patched platform interface
+        shell: bash
+        run: |
+          cp pubspec.yaml /tmp/pubspec.yaml
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('pubspec.yaml')
+          text = path.read_text()
+          old = '  just_audio_platform_interface: ^4.5.0\n'
+          new = '''  just_audio_platform_interface:\n    git:\n      url: https://github.com/Kyomorie/just_audio.git\n      ref: c6efa2e1415155a6aad515c7f255602b785883c2\n      path: just_audio_platform_interface\n'''
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected platform-interface dependency')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          flutter pub get --no-example
+          git checkout -- analysis_options.yaml 2>/dev/null || true
+      - name: Format and analyze
+        shell: bash
+        run: |
+          dart format lib/src/mediakit_player.dart
+          flutter analyze lib
+      - name: Restore side effects and scope gate
+        shell: bash
+        run: |
+          cp /tmp/pubspec.yaml pubspec.yaml
+          rm -f pubspec.lock
+          rm -rf .dart_tool
+          git checkout -- analysis_options.yaml 2>/dev/null || true
+          git diff --check
+          actual="$(git diff --name-only | sort)"
+          [[ "$actual" == 'lib/src/mediakit_player.dart' ]] || { echo "Unexpected changed paths: $actual" >&2; exit 1; }
+      - name: Commit validated hardening
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/src/mediakit_player.dart
+          git commit -m 'fix: keep native play idempotent across duplicate requests'
+      - name: Push only if target is unchanged
+        shell: bash
+        run: |
+          expected='be71c5f7fc5b9e58ca24f2cb4aca35588fc906c0'
+          remote_head="$(git ls-remote origin refs/heads/feat/backend-playback-ack | cut -f1)"
+          [[ "$remote_head" == "$expected" ]] || { echo "Target branch moved externally: $remote_head" >&2; exit 1; }
+          [[ "$(git rev-parse HEAD^)" == "$expected" ]] || { echo 'Unexpected parent' >&2; exit 1; }
+          [[ -z "$(git status --porcelain)" ]] || { git status --short >&2; exit 1; }
+          git push origin HEAD:refs/heads/feat/backend-playback-ack
