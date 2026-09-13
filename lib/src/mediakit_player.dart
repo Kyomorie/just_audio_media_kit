@@ -96,6 +96,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     _playbackSourceEpoch++;
     _playbackControlEpoch++;
     _completePlaybackStart(PlaybackStartStatusMessage.superseded);
+    _emitEffectivePlaying(false);
   }
 
   void _advancePlaybackControlEpoch() {
@@ -230,6 +231,9 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         }
         _updateDuration(duration);
         _updatePlaybackEvent();
+        if (_playbackStartCompleter != null) {
+          _schedulePlaybackEvaluation();
+        }
       }),
       _player.stream.position.listen((position) {
         _position = position;
@@ -237,7 +241,9 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         if (start != null) _position -= start;
         if (_position < Duration.zero) _position = Duration.zero;
         _updatePlaybackEvent();
-        _schedulePlaybackEvaluation();
+        if (_playbackStartCompleter != null) {
+          _schedulePlaybackEvaluation();
+        }
       }),
       _player.stream.buffering.listen((isBuffering) {
         if (_released || _failed) return;
@@ -282,6 +288,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
           }
         }
         _updatePlaybackEvent();
+        if (_playbackStartCompleter != null) {
+          _schedulePlaybackEvaluation();
+        }
+      }),
+      _player.stream.playing.listen((_) {
+        if (_released || _failed) return;
+        _schedulePlaybackEvaluation();
       }),
       _player.stream.volume.listen((volume) {
         _dataController.add(PlayerDataMessage(volume: volume / 100.0));
@@ -568,6 +581,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   @override
   Future<SeekResponse> seek(SeekRequest request) async {
     _advancePlaybackControlEpoch();
+    _emitEffectivePlaying(false);
     _logger.finest('seek(${request.toMap()})');
     if (request.index != null) {
       await _player.jump(request.index!);
@@ -592,6 +606,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
     // reset position on seek
     _updatePlaybackEvent();
+    _schedulePlaybackEvaluation();
     return SeekResponse();
   }
 
