@@ -1,0 +1,206 @@
+name: P1 desktop effective playback contract tests
+
+on:
+  push:
+    branches:
+      - automation/p1-media-kit-apply
+    paths:
+      - .github/workflows/p1-effective-playback-contract-tests.yml
+
+permissions: {}
+
+jobs:
+  apply-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/backend-playback-ack
+          fetch-depth: 2
+
+      - name: Verify exact target head
+        shell: bash
+        run: |
+          expected='8946dabf857571b4fb7f25c50876d920a81518ea'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Unexpected target head: $actual" >&2
+            exit 1
+          fi
+
+      - name: Apply asserted predicate extraction and tests
+        shell: bash
+        run: |
+          cat > lib/src/effective_playback.dart <<'EOF'
+          bool parseMpvFlag(String name, String value) {
+            switch (value.trim().toLowerCase()) {
+              case 'yes':
+              case 'true':
+              case '1':
+                return true;
+              case 'no':
+              case 'false':
+              case '0':
+                return false;
+              default:
+                throw StateError('Unexpected libmpv flag $name=$value');
+            }
+          }
+
+          bool isEffectivePlaybackFromMpvProperties({
+            required String pause,
+            required String coreIdle,
+            required String seeking,
+            required String pausedForCache,
+            required String eofReached,
+          }) {
+            return !parseMpvFlag('pause', pause) &&
+                !parseMpvFlag('core-idle', coreIdle) &&
+                !parseMpvFlag('seeking', seeking) &&
+                !parseMpvFlag('paused-for-cache', pausedForCache) &&
+                !parseMpvFlag('eof-reached', eofReached);
+          }
+          EOF
+
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('lib/src/set_property_io.dart')
+          text = path.read_text()
+          import_anchor = "import 'package:media_kit/media_kit.dart';\n"
+          if text.count(import_anchor) != 1:
+              raise SystemExit('Unexpected media_kit import')
+          text = text.replace(import_anchor, import_anchor + "\nimport 'effective_playback.dart';\n", 1)
+
+          old = """  bool flag(String name, String value) {\n    switch (value.trim().toLowerCase()) {\n      case 'yes':\n      case 'true':\n      case '1':\n        return true;\n      case 'no':\n      case 'false':\n      case '0':\n        return false;\n      default:\n        throw StateError('Unexpected libmpv flag $name=$value');\n    }\n  }\n\n  final paused = flag('pause', values[0]);\n  final coreIdle = flag('core-idle', values[1]);\n  final seeking = flag('seeking', values[2]);\n  final pausedForCache = flag('paused-for-cache', values[3]);\n  final eofReached = flag('eof-reached', values[4]);\n  return !paused && !coreIdle && !seeking && !pausedForCache && !eofReached;\n"""
+          new = """  return isEffectivePlaybackFromMpvProperties(\n    pause: values[0],\n    coreIdle: values[1],\n    seeking: values[2],\n    pausedForCache: values[3],\n    eofReached: values[4],\n  );\n"""
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected inline mpv predicate')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          mkdir -p test
+          cat > test/effective_playback_test.dart <<'EOF'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:just_audio_media_kit/src/effective_playback.dart';
+
+          void main() {
+            bool evaluate({
+              String pause = 'no',
+              String coreIdle = 'no',
+              String seeking = 'no',
+              String pausedForCache = 'no',
+              String eofReached = 'no',
+            }) =>
+                isEffectivePlaybackFromMpvProperties(
+                  pause: pause,
+                  coreIdle: coreIdle,
+                  seeking: seeking,
+                  pausedForCache: pausedForCache,
+                  eofReached: eofReached,
+                );
+
+            test('requires every blocking libmpv flag to be false', () {
+              expect(evaluate(), isTrue);
+              expect(evaluate(pause: 'yes'), isFalse);
+              expect(evaluate(coreIdle: 'yes'), isFalse);
+              expect(evaluate(seeking: 'yes'), isFalse);
+              expect(evaluate(pausedForCache: 'yes'), isFalse);
+              expect(evaluate(eofReached: 'yes'), isFalse);
+            });
+
+            test('accepts canonical boolean spellings case-insensitively', () {
+              expect(
+                evaluate(
+                  pause: ' FALSE ',
+                  coreIdle: '0',
+                  seeking: 'No',
+                  pausedForCache: 'false',
+                  eofReached: 'NO',
+                ),
+                isTrue,
+              );
+              expect(evaluate(pause: 'TRUE'), isFalse);
+              expect(evaluate(seeking: '1'), isFalse);
+            });
+
+            test('fails closed on an unknown libmpv flag value', () {
+              expect(
+                () => evaluate(coreIdle: 'unknown'),
+                throwsA(isA<StateError>()),
+              );
+            });
+          }
+          EOF
+
+      - name: Pin validation dependency
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('pubspec.yaml')
+          text = path.read_text()
+          old = '  just_audio_platform_interface: ^4.5.0\n'
+          new = '''  just_audio_platform_interface:\n    git:\n      url: https://github.com/Kyomorie/just_audio.git\n      ref: 16de0252e42b3badc817fbc2e18d03d6feea2b7f\n      path: just_audio_platform_interface\n'''
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected interface dependency declaration')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Analyze and test contract
+        shell: bash
+        run: |
+          flutter pub get --no-example
+          dart format lib/src/effective_playback.dart lib/src/set_property_io.dart test/effective_playback_test.dart
+          flutter analyze lib test
+          flutter test test/effective_playback_test.dart
+
+      - name: Restore validation-only files and validate scope
+        shell: bash
+        run: |
+          git checkout -- pubspec.yaml analysis_options.yaml
+          rm -f pubspec.lock
+          rm -rf .dart_tool
+          git diff --check
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' lib/src/effective_playback.dart lib/src/set_property_io.dart test/effective_playback_test.dart | sort)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo 'Unexpected changed paths:' >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+      - name: Commit validated predicate tests
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/src/effective_playback.dart lib/src/set_property_io.dart test/effective_playback_test.dart
+          git commit -m 'test: cover desktop effective playback predicate'
+
+      - name: Push only if target branch is unchanged
+        shell: bash
+        run: |
+          expected='8946dabf857571b4fb7f25c50876d920a81518ea'
+          remote_head="$(git ls-remote origin refs/heads/feat/backend-playback-ack | cut -f1)"
+          if [[ "$remote_head" != "$expected" ]]; then
+            echo "Target branch moved externally: $remote_head" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD^)" != "$expected" ]]; then
+            echo 'Validated test commit has unexpected parent.' >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Working tree dirty after validation.' >&2
+            git status --short >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/feat/backend-playback-ack
