@@ -497,6 +497,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<PlayResponse> play(PlayRequest request) async {
+    if (_playing) {
+      // just_audio may legitimately issue a duplicate native play request while
+      // load/play activation races settle. A duplicate play keeps the same
+      // user intent and must not supersede an in-flight playback-start ack.
+      _schedulePlaybackEvaluation();
+      return PlayResponse();
+    }
     _advancePlaybackControlEpoch();
     _playing = true;
     if (_mediaOpened) {
