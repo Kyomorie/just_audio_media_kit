@@ -1,0 +1,66 @@
+exit_code=1
+Analyzing just_audio_media_kit...                               
+
+   info • Parameter 'key' could be a super parameter. Trying converting 'key' to a super parameter • example/lib/common.dart:12:9 • use_super_parameters
+   info • Don't invoke 'print' in production code. Try using a logging framework • example/lib/main.dart:16:5 • avoid_print
+   info • Don't invoke 'print' in production code. Try using a logging framework • example/lib/main.dart:100:7 • avoid_print
+   info • Don't invoke 'print' in production code. Try using a logging framework • example/lib/main.dart:106:7 • avoid_print
+   info • 'onReorder' is deprecated and shouldn't be used. Use the onReorderItem callback instead. The onReorderItem callback adjusts the newIndex parameter for a removed item at the oldIndex. This feature was deprecated after v3.41.0-0.0.pre. Try replacing the use of the deprecated member with the replacement • example/lib/main.dart:275:23 • deprecated_member_use
+   info • Parameter 'key' could be a super parameter. Trying converting 'key' to a super parameter • example/lib/main.dart:336:9 • use_super_parameters
+warning • The asset directory 'audio/' doesn't exist. Try creating the directory or fixing the path to the directory • example/pubspec.yaml:31:7 • asset_directory_does_not_exist
+  error • The name 'AwaitPlaybackStartResponse' isn't a type, so it can't be used as a type argument. Try correcting the name to an existing type, or defining a type named 'AwaitPlaybackStartResponse' • lib/src/mediakit_player.dart:54:13 • non_type_as_type_argument
+  error • Undefined class 'PlaybackStartStatusMessage'. Try changing the name to the name of an existing class, or creating a class with the name 'PlaybackStartStatusMessage' • lib/src/mediakit_player.dart:80:5 • undefined_class
+  error • The method 'AwaitPlaybackStartResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'AwaitPlaybackStartResponse' • lib/src/mediakit_player.dart:92:9 • undefined_method
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:100:28 • undefined_identifier
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:106:28 • undefined_identifier
+  error • The named parameter 'effectivePlaying' isn't defined. Try correcting the name to an existing named parameter's name, or defining a named parameter with the name 'effectivePlaying' • lib/src/mediakit_player.dart:112:43 • undefined_named_parameter
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:156:11 • undefined_identifier
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:182:30 • undefined_identifier
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:186:30 • undefined_identifier
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:190:30 • undefined_identifier
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:196:30 • undefined_identifier
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:200:30 • undefined_identifier
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:375:7 • undefined_identifier
+  error • The name 'AwaitPlaybackStartResponse' isn't a type, so it can't be used as a type argument. Try correcting the name to an existing type, or defining a type named 'AwaitPlaybackStartResponse' • lib/src/mediakit_player.dart:526:10 • non_type_as_type_argument
+warning • The method doesn't override an inherited method. Try updating this class to match the superclass, or removing the override annotation • lib/src/mediakit_player.dart:526:38 • override_on_non_overriding_member
+  error • Undefined class 'AwaitPlaybackStartRequest'. Try changing the name to the name of an existing class, or creating a class with the name 'AwaitPlaybackStartRequest' • lib/src/mediakit_player.dart:527:5 • undefined_class
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:529:28 • undefined_identifier
+  error • The method 'AwaitPlaybackStartResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'AwaitPlaybackStartResponse' • lib/src/mediakit_player.dart:532:9 • undefined_method
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:533:19 • undefined_identifier
+  error • The method 'AwaitPlaybackStartResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'AwaitPlaybackStartResponse' • lib/src/mediakit_player.dart:542:9 • undefined_method
+  error • Undefined name 'PlaybackStartStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:542:44 • undefined_identifier
+  error • The name 'AwaitPlaybackStartResponse' isn't a type, so it can't be used as a type argument. Try correcting the name to an existing type, or defining a type named 'AwaitPlaybackStartResponse' • lib/src/mediakit_player.dart:545:33 • non_type_as_type_argument
+  error • The name 'ConfirmedSeekResponse' isn't a type, so it can't be used as a type argument. Try correcting the name to an existing type, or defining a type named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:606:10 • non_type_as_type_argument
+warning • The method doesn't override an inherited method. Try updating this class to match the superclass, or removing the override annotation • lib/src/mediakit_player.dart:606:33 • override_on_non_overriding_member
+  error • Undefined class 'ConfirmedSeekRequest'. Try changing the name to the name of an existing class, or creating a class with the name 'ConfirmedSeekRequest' • lib/src/mediakit_player.dart:607:5 • undefined_class
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:614:14 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:615:17 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:620:14 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:621:17 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:629:14 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:630:17 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:639:14 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:640:17 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:655:18 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:656:21 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:667:18 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:668:21 • undefined_identifier
+  error • The argument type 'Duration?' can't be assigned to the parameter type 'Duration'.  • lib/src/mediakit_player.dart:671:44 • argument_type_not_assignable
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:679:18 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:680:21 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:684:18 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:685:21 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:692:18 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:693:21 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:697:18 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:698:21 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:714:18 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:715:21 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:726:14 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:727:17 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:732:16 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:733:19 • undefined_identifier
+  error • The method 'ConfirmedSeekResponse' isn't defined for the type 'MediaKitPlayer'. Try correcting the name to the name of an existing method, or defining a method named 'ConfirmedSeekResponse' • lib/src/mediakit_player.dart:736:14 • undefined_method
+  error • Undefined name 'SeekConfirmationStatusMessage'. Try correcting the name to one that is defined, or defining the name • lib/src/mediakit_player.dart:737:17 • undefined_identifier
+
+61 issues found. (ran in 10.0s)
