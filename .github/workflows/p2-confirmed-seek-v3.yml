@@ -1,0 +1,125 @@
+name: P2 confirmed seek v3
+
+on:
+  push:
+    branches:
+      - automation/p2-confirmed-seek
+    paths:
+      - '.github/workflows/p2-confirmed-seek-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: automation/p2-confirmed-seek
+          fetch-depth: 0
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install Linux desktop prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev
+      - name: Checkout exact just_audio contract
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/p2-core"
+          git clone --quiet https://github.com/Kyomorie/just_audio.git "$RUNNER_TEMP/p2-core"
+          git -C "$RUNNER_TEMP/p2-core" checkout --quiet 37ad562a139c693ded726bbb6fd9f623f4579e70
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          core_root = Path(os.environ['RUNNER_TEMP']) / 'p2-core'
+          interface = (core_root / 'just_audio_platform_interface').as_posix()
+          just_audio = (core_root / 'just_audio').as_posix()
+          Path('pubspec_overrides.yaml').write_text(
+              'dependency_overrides:\n'
+              '  just_audio_platform_interface:\n'
+              f'    path: {interface}\n'
+          )
+          Path('example/pubspec_overrides.yaml').write_text(
+              'dependency_overrides:\n'
+              '  just_audio:\n'
+              f'    path: {just_audio}\n'
+              '  just_audio_platform_interface:\n'
+              f'    path: {interface}\n'
+          )
+          PY
+      - name: Apply exact candidate
+        shell: bash
+        run: |
+          python .github/scripts/apply-p2-confirmed-seek.py
+          python .github/scripts/harden-p2-confirmed-seek-v2.py
+          dart format lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          git diff --check
+          changed="$(git diff --name-only | grep -v '^pubspec_overrides.yaml$' | grep -v '^example/pubspec_overrides.yaml$' | grep -v '^\.github/' | paste -sd, -)"
+          test "$changed" = "lib/src/mediakit_player.dart,lib/src/set_property_io.dart,lib/src/set_property_noop.dart"
+      - name: Analyze package candidate
+        shell: bash
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Compile confirmed-seek API and desktop example
+        shell: bash
+        run: |
+          mkdir -p example/audio
+          cat > example/lib/p2_confirmed_seek_smoke.dart <<'DART'
+          import 'package:just_audio/just_audio.dart';
+
+          Future<SeekConfirmationResult> p2ConfirmedSeekSmoke(AudioPlayer player) {
+            return player.seekConfirmed(const Duration(seconds: 1));
+          }
+          DART
+          cd example
+          flutter pub get
+          dart analyze lib/p2_confirmed_seek_smoke.dart
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            flutter build windows --debug
+          else
+            flutter build linux --debug
+          fi
+
+  commit:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: automation/p2-confirmed-seek
+          fetch-depth: 0
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Apply exact validated source patch
+        shell: bash
+        run: |
+          python3 .github/scripts/apply-p2-confirmed-seek.py
+          python3 .github/scripts/harden-p2-confirmed-seek-v2.py
+          dart format lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          git diff --check
+          changed="$(git diff --name-only | grep -v '^\.github/' | paste -sd, -)"
+          test "$changed" = "lib/src/mediakit_player.dart,lib/src/set_property_io.dart,lib/src/set_property_noop.dart"
+      - name: Commit source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/src/mediakit_player.dart lib/src/set_property_io.dart lib/src/set_property_noop.dart
+          git commit -m "feat: confirm seeks from fresh libmpv state"
+          git push origin HEAD:automation/p2-confirmed-seek
