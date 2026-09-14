@@ -46,6 +46,16 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   Completer<Duration?>? _loadCompleter;
   bool _released = false;
   bool _failed = false;
+  int _playbackSourceEpoch = 0;
+  int _playbackControlEpoch = 0;
+  Completer<AwaitPlaybackStartResponse>? _playbackStartCompleter;
+  int? _playbackStartSourceEpoch;
+  int? _playbackStartControlEpoch;
+  int? _playbackStartIndex;
+  String? _playbackStartAttemptId;
+  bool _lastEffectivePlaying = false;
+  bool _playbackEvaluationRunning = false;
+  bool _playbackEvaluationPending = false;
   Future<void>? _pendingSeek;
   Future<void>? _pendingOpen;
   Future<void>? _releaseFuture;
@@ -61,6 +71,131 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     final index = playlist.index;
     if (index < 0 || index >= playlist.medias.length) return null;
     return playlist.medias[index];
+  }
+
+  void _completePlaybackStart(
+    PlaybackStartStatusMessage status, {
+    String? errorMessage,
+  }) {
+    final completer = _playbackStartCompleter;
+    if (completer == null) return;
+    _playbackStartCompleter = null;
+    _playbackStartSourceEpoch = null;
+    _playbackStartControlEpoch = null;
+    _playbackStartIndex = null;
+    _playbackStartAttemptId = null;
+    if (!completer.isCompleted) {
+      completer.complete(AwaitPlaybackStartResponse(
+        status: status,
+        errorMessage: errorMessage,
+      ));
+    }
+  }
+
+  void _advancePlaybackSourceEpoch() {
+    _playbackSourceEpoch++;
+    _playbackControlEpoch++;
+    _completePlaybackStart(PlaybackStartStatusMessage.superseded);
+    _emitEffectivePlaying(false);
+  }
+
+  void _advancePlaybackControlEpoch() {
+    _playbackControlEpoch++;
+    _completePlaybackStart(PlaybackStartStatusMessage.superseded);
+  }
+
+  void _emitEffectivePlaying(bool effectivePlaying) {
+    if (_lastEffectivePlaying == effectivePlaying) return;
+    _lastEffectivePlaying = effectivePlaying;
+    _dataController.add(PlayerDataMessage(effectivePlaying: effectivePlaying));
+  }
+
+  void _schedulePlaybackEvaluation() {
+    if (_released) return;
+    _playbackEvaluationPending = true;
+    if (_playbackEvaluationRunning) return;
+    _playbackEvaluationRunning = true;
+    unawaited(_drainPlaybackEvaluations());
+  }
+
+  Future<void> _drainPlaybackEvaluations() async {
+    try {
+      while (_playbackEvaluationPending && !_released) {
+        _playbackEvaluationPending = false;
+        await _evaluatePlaybackState();
+      }
+    } finally {
+      _playbackEvaluationRunning = false;
+      if (_playbackEvaluationPending && !_released) {
+        _schedulePlaybackEvaluation();
+      }
+    }
+  }
+
+  Future<void> _evaluatePlaybackState() async {
+    final sourceEpoch = _playbackSourceEpoch;
+    final controlEpoch = _playbackControlEpoch;
+    final index = _currentIndex;
+    final attemptId = _playbackStartAttemptId;
+
+    bool? nativeEffectivePlaying;
+    try {
+      nativeEffectivePlaying = await isNativeEffectivelyPlaying(_player);
+    } catch (error) {
+      if (_released ||
+          sourceEpoch != _playbackSourceEpoch ||
+          controlEpoch != _playbackControlEpoch ||
+          index != _currentIndex) {
+        return;
+      }
+      _emitEffectivePlaying(false);
+      if (attemptId != null && attemptId == _playbackStartAttemptId) {
+        _completePlaybackStart(
+          PlaybackStartStatusMessage.failed,
+          errorMessage: error.toString(),
+        );
+      }
+      return;
+    }
+
+    if (_released ||
+        sourceEpoch != _playbackSourceEpoch ||
+        controlEpoch != _playbackControlEpoch ||
+        index != _currentIndex) {
+      return;
+    }
+
+    final effectivePlaying = nativeEffectivePlaying == true &&
+        _playing &&
+        _mediaOpened &&
+        !_failed &&
+        _processingState == ProcessingStateMessage.ready;
+    _emitEffectivePlaying(effectivePlaying);
+
+    if (attemptId == null || attemptId != _playbackStartAttemptId) return;
+    if (_playbackStartSourceEpoch != _playbackSourceEpoch ||
+        _playbackStartControlEpoch != _playbackControlEpoch ||
+        _playbackStartIndex != _currentIndex) {
+      _completePlaybackStart(PlaybackStartStatusMessage.superseded);
+      return;
+    }
+    if (nativeEffectivePlaying == null) {
+      _completePlaybackStart(PlaybackStartStatusMessage.unsupported);
+      return;
+    }
+    if (_failed) {
+      _completePlaybackStart(PlaybackStartStatusMessage.failed);
+      return;
+    }
+    if (!_playing ||
+        _processingState == ProcessingStateMessage.idle ||
+        _processingState == ProcessingStateMessage.completed) {
+      _completePlaybackStart(PlaybackStartStatusMessage.rejected);
+      return;
+    }
+    if (effectivePlaying) {
+      _completePlaybackStart(PlaybackStartStatusMessage.started);
+    }
   }
 
   MediaKitPlayer(super.id) {
@@ -96,6 +231,9 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         }
         _updateDuration(duration);
         _updatePlaybackEvent();
+        if (_playbackStartCompleter != null) {
+          _schedulePlaybackEvaluation();
+        }
       }),
       _player.stream.position.listen((position) {
         _position = position;
@@ -103,6 +241,9 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         if (start != null) _position -= start;
         if (_position < Duration.zero) _position = Duration.zero;
         _updatePlaybackEvent();
+        if (_playbackStartCompleter != null) {
+          _schedulePlaybackEvaluation();
+        }
       }),
       _player.stream.buffering.listen((isBuffering) {
         if (_released || _failed) return;
@@ -130,6 +271,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         _errorCode = null;
         _errorMessage = null;
         _updatePlaybackEvent();
+        _schedulePlaybackEvaluation();
       }),
       _player.stream.buffer.listen((buffer) {
         if (_released || _failed) return;
@@ -146,6 +288,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
           }
         }
         _updatePlaybackEvent();
+        if (_playbackStartCompleter != null) {
+          _schedulePlaybackEvaluation();
+        }
+      }),
+      _player.stream.playing.listen((_) {
+        if (_released || _failed) return;
+        _schedulePlaybackEvaluation();
       }),
       _player.stream.volume.listen((volume) {
         _dataController.add(PlayerDataMessage(volume: volume / 100.0));
@@ -164,6 +313,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         _errorMessage = null;
 
         _updatePlaybackEvent();
+        _schedulePlaybackEvaluation();
       }),
       _player.stream.error.listen((error) {
         final errorUri = RegExp(r'Failed to open (.*)\.').firstMatch(error)?[1];
@@ -185,6 +335,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         }
         _duration = _currentMedia?.extras?['overrideDuration'];
         _updatePlaybackEvent();
+        _schedulePlaybackEvaluation();
       }),
       _player.stream.playlistMode.listen((playlistMode) {
         _dataController.add(
@@ -214,6 +365,11 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   void _reportError(String message) {
     if (_released || _failed) return;
     _failed = true;
+    _emitEffectivePlaying(false);
+    _completePlaybackStart(
+      PlaybackStartStatusMessage.failed,
+      errorMessage: message,
+    );
     _mediaOpened = false;
     _setPosition = null;
     _processingState = ProcessingStateMessage.idle;
@@ -281,6 +437,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     if (_released) {
       throw PlatformException(code: 'abort', message: 'Player released');
     }
+    _advancePlaybackSourceEpoch();
     _logger.finest('load(${request.toMap()})');
     _mediaOpened = false;
     final load = _loadCompleter = Completer<Duration?>();
@@ -333,25 +490,63 @@ class MediaKitPlayer extends AudioPlayerPlatform {
       load.complete(_duration);
     }
     _updatePlaybackEvent();
+    _schedulePlaybackEvaluation();
     final duration = await load.future;
     return LoadResponse(duration: duration);
   }
 
   @override
   Future<PlayResponse> play(PlayRequest request) async {
-    _playing = true;
+    if (!_playing) {
+      _advancePlaybackControlEpoch();
+      _playing = true;
+    }
+    // just_audio may legitimately issue a duplicate native play request while
+    // load/play activation races settle. Preserve the adapter's prior
+    // idempotent native play dispatch, but keep the same control epoch so an
+    // in-flight playback-start ack is not spuriously superseded.
     if (_mediaOpened) {
       await _player.play();
     }
+    _schedulePlaybackEvaluation();
     return PlayResponse();
   }
 
   @override
+  Future<AwaitPlaybackStartResponse> awaitPlaybackStart(
+      AwaitPlaybackStartRequest request) {
+    _completePlaybackStart(PlaybackStartStatusMessage.superseded);
+    if (_released) {
+      return Future.value(AwaitPlaybackStartResponse(
+        status: PlaybackStartStatusMessage.failed,
+        errorMessage: 'Player released',
+      ));
+    }
+    if (!_playing ||
+        _processingState == ProcessingStateMessage.idle ||
+        _processingState == ProcessingStateMessage.completed) {
+      return Future.value(AwaitPlaybackStartResponse(
+        status: PlaybackStartStatusMessage.rejected,
+      ));
+    }
+    final completer = Completer<AwaitPlaybackStartResponse>();
+    _playbackStartCompleter = completer;
+    _playbackStartSourceEpoch = _playbackSourceEpoch;
+    _playbackStartControlEpoch = _playbackControlEpoch;
+    _playbackStartIndex = _currentIndex;
+    _playbackStartAttemptId = request.attemptId;
+    _schedulePlaybackEvaluation();
+    return completer.future;
+  }
+
+  @override
   Future<PauseResponse> pause(PauseRequest request) async {
+    _advancePlaybackControlEpoch();
     _playing = false;
     if (_mediaOpened) {
       await _player.pause();
     }
+    _schedulePlaybackEvaluation();
     return PauseResponse();
   }
 
@@ -391,6 +586,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<SeekResponse> seek(SeekRequest request) async {
+    _advancePlaybackControlEpoch();
+    _emitEffectivePlaying(false);
     _logger.finest('seek(${request.toMap()})');
     if (request.index != null) {
       await _player.jump(request.index!);
@@ -415,6 +612,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
     // reset position on seek
     _updatePlaybackEvent();
+    _schedulePlaybackEvaluation();
     return SeekResponse();
   }
 
@@ -466,6 +664,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   Future<void> _release() async {
     _logger.info('releasing player resources');
+    _advancePlaybackControlEpoch();
+    _emitEffectivePlaying(false);
     _released = true;
     _mediaOpened = false;
     _setPosition = null;

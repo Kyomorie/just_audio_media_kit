@@ -6,3 +6,5 @@ Future<void> setProperty(Player player, String key, dynamic value) {
   // noop
   return Future.value();
 }
+
+Future<bool?> isNativeEffectivelyPlaying(Player player) async => null;
