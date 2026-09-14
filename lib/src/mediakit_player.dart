@@ -409,7 +409,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     return switch (playlistMode) {
       PlaylistMode.none => LoopModeMessage.off,
       PlaylistMode.single => LoopModeMessage.one,
-      PlaylistMode.loop => LoopModeMessage.loop,
+      PlaylistMode.loop => LoopModeMessage.all,
     };
   }
 
