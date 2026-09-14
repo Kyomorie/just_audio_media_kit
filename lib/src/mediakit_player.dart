@@ -409,7 +409,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     return switch (playlistMode) {
       PlaylistMode.none => LoopModeMessage.off,
       PlaylistMode.single => LoopModeMessage.one,
-      PlaylistMode.loop => LoopModeMessage.all,
+      PlaylistMode.loop => LoopModeMessage.loop,
     };
   }
 
@@ -611,12 +611,14 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     _logger.finest('seekConfirmed(${request.toMap()})');
 
     if (_released) {
+      _schedulePlaybackEvaluation();
       return ConfirmedSeekResponse(
         status: SeekConfirmationStatusMessage.failed,
         errorMessage: 'Player released',
       );
     }
     if (_failed) {
+      _schedulePlaybackEvaluation();
       return ConfirmedSeekResponse(
         status: SeekConfirmationStatusMessage.failed,
         errorMessage: _errorMessage,
@@ -626,6 +628,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         _processingState == ProcessingStateMessage.idle ||
         _processingState == ProcessingStateMessage.loading ||
         (request.position == null && request.index == null)) {
+      _schedulePlaybackEvaluation();
       return ConfirmedSeekResponse(
         status: SeekConfirmationStatusMessage.rejected,
       );
@@ -636,6 +639,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     final playlist = _player.state.playlist;
     final targetIndex = request.index ?? _currentIndex;
     if (targetIndex < 0 || targetIndex >= playlist.medias.length) {
+      _schedulePlaybackEvaluation();
       return ConfirmedSeekResponse(
         status: SeekConfirmationStatusMessage.rejected,
       );
@@ -652,6 +656,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         await _player.jump(targetIndex);
         if (!_playing) await _player.pause();
         if (superseded()) {
+          _schedulePlaybackEvaluation();
           return ConfirmedSeekResponse(
             status: SeekConfirmationStatusMessage.superseded,
           );
@@ -665,6 +670,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         requestedNativePosition = nativePosition;
         _position = requestedPosition;
         if (_player.state.duration <= Duration.zero) {
+          _schedulePlaybackEvaluation();
           return ConfirmedSeekResponse(
             status: SeekConfirmationStatusMessage.rejected,
           );
@@ -677,11 +683,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
       const positionTolerance = Duration(milliseconds: 1500);
       for (var check = 0; check < maxChecks; check++) {
         if (superseded()) {
+          _schedulePlaybackEvaluation();
           return ConfirmedSeekResponse(
             status: SeekConfirmationStatusMessage.superseded,
           );
         }
         if (_failed) {
+          _schedulePlaybackEvaluation();
           return ConfirmedSeekResponse(
             status: SeekConfirmationStatusMessage.failed,
             errorMessage: _errorMessage,
@@ -690,11 +698,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
         final snapshot = await getNativeSeekSnapshot(_player);
         if (snapshot == null) {
+          _schedulePlaybackEvaluation();
           return ConfirmedSeekResponse(
             status: SeekConfirmationStatusMessage.unsupported,
           );
         }
         if (superseded()) {
+          _schedulePlaybackEvaluation();
           return ConfirmedSeekResponse(
             status: SeekConfirmationStatusMessage.superseded,
           );
@@ -724,11 +734,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
         }
       }
 
+      _schedulePlaybackEvaluation();
       return ConfirmedSeekResponse(
         status: SeekConfirmationStatusMessage.failed,
         errorMessage: 'Native seek could not be confirmed',
       );
     } catch (error) {
+      _schedulePlaybackEvaluation();
       if (superseded()) {
         return ConfirmedSeekResponse(
           status: SeekConfirmationStatusMessage.superseded,
