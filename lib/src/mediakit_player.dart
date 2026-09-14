@@ -5,6 +5,7 @@ import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 import 'package:logging/logging.dart';
 import 'package:media_kit/media_kit.dart';
+
 import 'set_property.dart';
 
 /// An [AudioPlayerPlatform] which wraps `package:media_kit`'s [Player]
@@ -27,7 +28,9 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   Future<void> _configure() async {
     await _readyCompleter.future;
     await excludeAudioDecoders(
-        _player, JustAudioMediaKit.excludedAudioDecoders);
+      _player,
+      JustAudioMediaKit.excludedAudioDecoders,
+    );
   }
 
   static final _logger = Logger('MediaKitPlayer');
@@ -85,10 +88,9 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     _playbackStartIndex = null;
     _playbackStartAttemptId = null;
     if (!completer.isCompleted) {
-      completer.complete(AwaitPlaybackStartResponse(
-        status: status,
-        errorMessage: errorMessage,
-      ));
+      completer.complete(
+        AwaitPlaybackStartResponse(status: status, errorMessage: errorMessage),
+      );
     }
   }
 
@@ -165,7 +167,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
       return;
     }
 
-    final effectivePlaying = nativeEffectivePlaying == true &&
+    final effectivePlaying =
+        nativeEffectivePlaying == true &&
         _playing &&
         _mediaOpened &&
         !_failed &&
@@ -200,14 +203,15 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   MediaKitPlayer(super.id) {
     _player = Player(
-        configuration: PlayerConfiguration(
-      pitch: JustAudioMediaKit.pitch,
-      protocolWhitelist: JustAudioMediaKit.protocolWhitelist,
-      title: JustAudioMediaKit.title,
-      bufferSize: JustAudioMediaKit.bufferSize,
-      logLevel: JustAudioMediaKit.mpvLogLevel,
-      ready: () => _readyCompleter.complete(),
-    ));
+      configuration: PlayerConfiguration(
+        pitch: JustAudioMediaKit.pitch,
+        protocolWhitelist: JustAudioMediaKit.protocolWhitelist,
+        title: JustAudioMediaKit.title,
+        bufferSize: JustAudioMediaKit.bufferSize,
+        logLevel: JustAudioMediaKit.mpvLogLevel,
+        ready: () => _readyCompleter.complete(),
+      ),
+    );
 
     if (JustAudioMediaKit.prefetchPlaylist) {
       setProperty(_player, 'prefetch-playlist', 'yes');
@@ -339,7 +343,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
       }),
       _player.stream.playlistMode.listen((playlistMode) {
         _dataController.add(
-            PlayerDataMessage(loopMode: _playlistModeToLoopMode(playlistMode)));
+          PlayerDataMessage(loopMode: _playlistModeToLoopMode(playlistMode)),
+        );
       }),
       _player.stream.pitch.listen((pitch) {
         _dataController.add(PlayerDataMessage(pitch: pitch));
@@ -378,7 +383,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     final load = _loadCompleter;
     if (load != null && !load.isCompleted) {
       load.completeError(
-          PlatformException(code: '$kErrorCode', message: message));
+        PlatformException(code: '$kErrorCode', message: message),
+      );
     }
     _updatePlaybackEvent();
   }
@@ -418,18 +424,20 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   /// Updates the playback event
   void _updatePlaybackEvent() {
     if (_released) return;
-    _eventController.add(PlaybackEventMessage(
-      processingState: _processingState,
-      updateTime: DateTime.now(),
-      updatePosition: _position,
-      bufferedPosition: _bufferedPosition,
-      duration: _duration,
-      icyMetadata: null,
-      currentIndex: _currentIndex,
-      androidAudioSessionId: null,
-      errorCode: _errorCode,
-      errorMessage: _errorMessage,
-    ));
+    _eventController.add(
+      PlaybackEventMessage(
+        processingState: _processingState,
+        updateTime: DateTime.now(),
+        updatePosition: _position,
+        bufferedPosition: _bufferedPosition,
+        duration: _duration,
+        icyMetadata: null,
+        currentIndex: _currentIndex,
+        androidAudioSessionId: null,
+        errorCode: _errorCode,
+        errorMessage: _errorMessage,
+      ),
+    );
   }
 
   @override
@@ -458,13 +466,15 @@ class MediaKitPlayer extends AudioPlayerPlatform {
       final audioSource =
           request.audioSourceMessage as ConcatenatingAudioSourceMessage;
       final playable = Playlist(
-          audioSource.children.map(_convertAudioSourceIntoMediaKit).toList(),
-          index: _currentIndex);
+        audioSource.children.map(_convertAudioSourceIntoMediaKit).toList(),
+        index: _currentIndex,
+      );
 
       await (_pendingOpen = _player.open(playable, play: _playing));
     } else {
-      final playable =
-          _convertAudioSourceIntoMediaKit(request.audioSourceMessage);
+      final playable = _convertAudioSourceIntoMediaKit(
+        request.audioSourceMessage,
+      );
       _logger.finest('playable is ${playable.toString()}');
       await (_pendingOpen = _player.open(playable, play: _playing));
     }
@@ -514,20 +524,23 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<AwaitPlaybackStartResponse> awaitPlaybackStart(
-      AwaitPlaybackStartRequest request) {
+    AwaitPlaybackStartRequest request,
+  ) {
     _completePlaybackStart(PlaybackStartStatusMessage.superseded);
     if (_released) {
-      return Future.value(AwaitPlaybackStartResponse(
-        status: PlaybackStartStatusMessage.failed,
-        errorMessage: 'Player released',
-      ));
+      return Future.value(
+        AwaitPlaybackStartResponse(
+          status: PlaybackStartStatusMessage.failed,
+          errorMessage: 'Player released',
+        ),
+      );
     }
     if (!_playing ||
         _processingState == ProcessingStateMessage.idle ||
         _processingState == ProcessingStateMessage.completed) {
-      return Future.value(AwaitPlaybackStartResponse(
-        status: PlaybackStartStatusMessage.rejected,
-      ));
+      return Future.value(
+        AwaitPlaybackStartResponse(status: PlaybackStartStatusMessage.rejected),
+      );
     }
     final completer = Completer<AwaitPlaybackStartResponse>();
     _playbackStartCompleter = completer;
@@ -574,14 +587,158 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<SetShuffleModeResponse> setShuffleMode(
-      SetShuffleModeRequest request) async {
+    SetShuffleModeRequest request,
+  ) async {
     bool shuffling = request.shuffleMode != ShuffleModeMessage.none;
     await _player.setShuffle(shuffling);
 
-    _dataController.add(PlayerDataMessage(
-        shuffleMode:
-            shuffling ? ShuffleModeMessage.all : ShuffleModeMessage.none));
+    _dataController.add(
+      PlayerDataMessage(
+        shuffleMode: shuffling
+            ? ShuffleModeMessage.all
+            : ShuffleModeMessage.none,
+      ),
+    );
     return SetShuffleModeResponse();
+  }
+
+  @override
+  Future<ConfirmedSeekResponse> seekConfirmed(
+    ConfirmedSeekRequest request,
+  ) async {
+    _advancePlaybackControlEpoch();
+    _emitEffectivePlaying(false);
+    _logger.finest('seekConfirmed(${request.toMap()})');
+
+    if (_released) {
+      return ConfirmedSeekResponse(
+        status: SeekConfirmationStatusMessage.failed,
+        errorMessage: 'Player released',
+      );
+    }
+    if (_failed) {
+      return ConfirmedSeekResponse(
+        status: SeekConfirmationStatusMessage.failed,
+        errorMessage: _errorMessage,
+      );
+    }
+    if (!_mediaOpened ||
+        _processingState == ProcessingStateMessage.idle ||
+        _processingState == ProcessingStateMessage.loading ||
+        (request.position == null && request.index == null)) {
+      return ConfirmedSeekResponse(
+        status: SeekConfirmationStatusMessage.rejected,
+      );
+    }
+
+    final sourceEpoch = _playbackSourceEpoch;
+    final controlEpoch = _playbackControlEpoch;
+    final playlist = _player.state.playlist;
+    final targetIndex = request.index ?? _currentIndex;
+    if (targetIndex < 0 || targetIndex >= playlist.medias.length) {
+      return ConfirmedSeekResponse(
+        status: SeekConfirmationStatusMessage.rejected,
+      );
+    }
+    final targetStart = playlist.medias[targetIndex].start ?? Duration.zero;
+
+    bool superseded() =>
+        _released ||
+        sourceEpoch != _playbackSourceEpoch ||
+        controlEpoch != _playbackControlEpoch;
+
+    try {
+      if (request.index != null) {
+        await _player.jump(targetIndex);
+        if (!_playing) await _player.pause();
+        if (superseded()) {
+          return ConfirmedSeekResponse(
+            status: SeekConfirmationStatusMessage.superseded,
+          );
+        }
+      }
+
+      final requestedPosition = request.position;
+      Duration? requestedNativePosition;
+      if (requestedPosition != null) {
+        final nativePosition = requestedPosition + targetStart;
+        requestedNativePosition = nativePosition;
+        _position = requestedPosition;
+        if (_player.state.duration <= Duration.zero) {
+          return ConfirmedSeekResponse(
+            status: SeekConfirmationStatusMessage.rejected,
+          );
+        }
+        await (_pendingSeek = _player.seek(nativePosition));
+      }
+
+      const maxChecks = 100;
+      const checkDelay = Duration(milliseconds: 25);
+      const positionTolerance = Duration(milliseconds: 1500);
+      for (var check = 0; check < maxChecks; check++) {
+        if (superseded()) {
+          return ConfirmedSeekResponse(
+            status: SeekConfirmationStatusMessage.superseded,
+          );
+        }
+        if (_failed) {
+          return ConfirmedSeekResponse(
+            status: SeekConfirmationStatusMessage.failed,
+            errorMessage: _errorMessage,
+          );
+        }
+
+        final snapshot = await getNativeSeekSnapshot(_player);
+        if (snapshot == null) {
+          return ConfirmedSeekResponse(
+            status: SeekConfirmationStatusMessage.unsupported,
+          );
+        }
+        if (superseded()) {
+          return ConfirmedSeekResponse(
+            status: SeekConfirmationStatusMessage.superseded,
+          );
+        }
+
+        final nativeIndexMatches = snapshot.index == targetIndex;
+        final nativePositionMatches =
+            requestedNativePosition == null ||
+            (snapshot.position - requestedNativePosition).abs() <=
+                positionTolerance;
+        if (!snapshot.seeking && nativeIndexMatches && nativePositionMatches) {
+          var actualPosition = snapshot.position - targetStart;
+          if (actualPosition < Duration.zero) actualPosition = Duration.zero;
+          _position = actualPosition;
+          _currentIndex = snapshot.index;
+          _updatePlaybackEvent();
+          _schedulePlaybackEvaluation();
+          return ConfirmedSeekResponse(
+            status: SeekConfirmationStatusMessage.reached,
+            actualPosition: actualPosition,
+            actualIndex: snapshot.index,
+          );
+        }
+
+        if (check + 1 < maxChecks) {
+          await Future<void>.delayed(checkDelay);
+        }
+      }
+
+      return ConfirmedSeekResponse(
+        status: SeekConfirmationStatusMessage.failed,
+        errorMessage: 'Native seek could not be confirmed',
+      );
+    } catch (error) {
+      if (superseded()) {
+        return ConfirmedSeekResponse(
+          status: SeekConfirmationStatusMessage.superseded,
+        );
+      }
+      return ConfirmedSeekResponse(
+        status: SeekConfirmationStatusMessage.failed,
+        errorMessage: error.toString(),
+      );
+    }
   }
 
   @override
@@ -618,7 +775,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<ConcatenatingInsertAllResponse> concatenatingInsertAll(
-      ConcatenatingInsertAllRequest request) async {
+    ConcatenatingInsertAllRequest request,
+  ) async {
     // _logger.fine('concatenatingInsertAll(${request.toMap()})');
     for (final source in request.children) {
       await _player.add(_convertAudioSourceIntoMediaKit(source));
@@ -637,7 +795,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<ConcatenatingRemoveRangeResponse> concatenatingRemoveRange(
-      ConcatenatingRemoveRangeRequest request) async {
+    ConcatenatingRemoveRangeRequest request,
+  ) async {
     for (var i = request.startIndex; i < request.endIndex; i++) {
       await _player.remove(request.startIndex);
     }
@@ -647,15 +806,17 @@ class MediaKitPlayer extends AudioPlayerPlatform {
 
   @override
   Future<ConcatenatingMoveResponse> concatenatingMove(
-      ConcatenatingMoveRequest request) {
+    ConcatenatingMoveRequest request,
+  ) {
     return _player
         .move(
-            request.currentIndex,
-            // not sure why, but apparently there's an underlying difference between just_audio's move implementation
-            // and media_kit, so let's fix it
-            request.currentIndex > request.newIndex
-                ? request.newIndex
-                : request.newIndex + 1)
+          request.currentIndex,
+          // not sure why, but apparently there's an underlying difference between just_audio's move implementation
+          // and media_kit, so let's fix it
+          request.currentIndex > request.newIndex
+              ? request.newIndex
+              : request.newIndex + 1,
+        )
         .then((_) => ConcatenatingMoveResponse());
   }
 
@@ -672,7 +833,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     final load = _loadCompleter;
     if (load != null && !load.isCompleted) {
       load.completeError(
-          PlatformException(code: 'abort', message: 'Player released'));
+        PlatformException(code: 'abort', message: 'Player released'),
+      );
     }
     // Stop callbacks before disposing native resources. A duration callback
     // can otherwise enqueue a seek on an already disposed native player.
@@ -707,12 +869,16 @@ class MediaKitPlayer extends AudioPlayerPlatform {
       //   );
 
       case final ClippingAudioSourceMessage clippingSource:
-        return Media(clippingSource.child.uri,
-            start: clippingSource.start, end: clippingSource.end);
+        return Media(
+          clippingSource.child.uri,
+          start: clippingSource.start,
+          end: clippingSource.end,
+        );
 
       default:
         throw UnsupportedError(
-            '${audioSource.runtimeType} is currently not supported');
+          '${audioSource.runtimeType} is currently not supported',
+        );
     }
   }
 }
